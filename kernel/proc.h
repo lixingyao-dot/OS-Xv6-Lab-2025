@@ -1,3 +1,25 @@
+// 保护标志
+#define PROT_NONE  0x0
+#define PROT_READ  0x1
+#define PROT_WRITE 0x2
+#define PROT_EXEC  0x4
+
+// 映射标志
+#define MAP_SHARED   0x01
+#define MAP_PRIVATE  0x02
+#define MAP_FIXED    0x04
+#define MAP_ANONYMOUS 0x08
+
+#define NVMA 16  // 每个进程最多16个VMA区域
+struct vma {
+  int valid;          // 是否有效 
+  uint64 addr;        // 起始虚拟地址
+  uint64 length;      // 映射长度
+  int prot;           // 保护权限组合 
+  int flags;          // MAP_SHARED 或 MAP_PRIVATE
+  struct file *file;  // 映射的文件指针
+  uint64 offset;      // 文件偏移量
+};
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -93,7 +115,7 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
-
+  struct vma vma[NVMA];  // 虚拟内存区域数组
   // these are private to the process, so p->lock need not be held.
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
@@ -104,3 +126,5 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+
+

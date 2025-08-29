@@ -5,7 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "spinlock.h"
+#include "proc.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 /*
  * the kernel's page table.
  */
@@ -165,14 +169,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   uint64 a;
   pte_t *pte;
 
-  if((va % PGSIZE) != 0)
-    panic("uvmunmap: not aligned");
-
-  for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+  for(a = va; a < va + npages * PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      continue;  // 跳过未映射的页面，而不是 panic
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;  // 跳过无效的 PTE，而不是 panic
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -304,11 +305,13 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;  // 修改1：跳过未映射的页面而不是panic
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;  // 修改2：跳过无效的PTE而不是panic
+    
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
+    
     if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
@@ -428,4 +431,46 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// 处理mmap页错误
+int
+mmap_pagefault(uint64 va, struct vma *v)
+{
+  struct proc *p = myproc();
+  
+  // 分配物理页
+  char *mem = kalloc();
+  if(mem == 0)
+    return -1;
+  memset(mem, 0, PGSIZE);
+
+  // 计算文件偏移
+  uint64 offset = (va - v->addr) + v->offset;
+
+  // 从文件读取数据
+  if(v->file) {
+    ilock(v->file->ip);
+    if(readi(v->file->ip, 0, (uint64)mem, offset, PGSIZE) < 0) {
+      iunlock(v->file->ip);
+      kfree(mem);
+      return -1;
+    }
+    iunlock(v->file->ip);
+  }
+
+  // 设置PTE权限
+  int perm = PTE_U;
+  if(v->prot & PROT_READ) perm |= PTE_R;
+  if(v->prot & PROT_WRITE) perm |= PTE_W;
+  if(v->prot & PROT_EXEC) perm |= PTE_X;
+
+  // 映射到用户空间
+  if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, 
+              (uint64)mem, perm) != 0) {
+    kfree(mem);
+    return -1;
+  }
+
+  return 0;
 }

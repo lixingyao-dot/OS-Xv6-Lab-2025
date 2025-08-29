@@ -484,3 +484,111 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length, prot, flags, fd;
+  struct file *file;
+  
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || 
+     argint(2, &prot) < 0 || argint(3, &flags) < 0 || 
+     argint(4, &fd) < 0)
+    return -1;
+  
+  if(addr != 0)
+    return -1; // 只支持addr=0的情况
+  
+  if(fd < 0 || fd >= NOFILE || (file = myproc()->ofile[fd]) == 0)
+    return -1;
+  
+  // 检查文件是否可读/可写
+  if((prot & PROT_READ) && !file->readable)
+    return -1;
+  if((prot & PROT_WRITE) && !file->writable && (flags & MAP_PRIVATE) == 0)
+    return -1;
+  
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  
+  // 查找空闲的VMA槽位
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vma[i].valid == 0) {  // 将 used 改为 valid
+      v = &p->vma[i];
+      break;
+    }
+  }
+  
+  if(v == 0)
+    return -1;
+  
+  // 在用户地址空间中找到空闲区域
+  uint64 va = p->sz;
+  p->sz += length;
+  
+  // 设置VMA
+  v->valid = 1;  // 将 used 改为 valid
+  v->addr = va;
+  v->length = length;
+  v->prot = prot;
+  v->flags = flags;
+  v->file = filedup(file); // 增加文件引用计数
+  v->offset = 0;
+  
+  return va;
+}
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+  
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  
+  // 查找包含该地址范围的VMA
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vma[i].valid && addr >= p->vma[i].addr &&  // 将 used 改为 valid
+       addr < p->vma[i].addr + p->vma[i].length) {
+      v = &p->vma[i];
+      break;
+    }
+  }
+  
+  if(v == 0)
+    return -1;
+  
+  // 检查是否在开始或结束处取消映射
+  if(addr != v->addr && addr + length != v->addr + v->length)
+    return -1; // 不支持在中间取消映射
+  
+  // 如果需要，将修改的页面写回文件
+  if((v->flags & MAP_SHARED) && (v->prot & PROT_WRITE)) {
+    filewrite(v->file, addr, length);
+  }
+  
+  // 取消映射页面
+  uvmunmap(p->pagetable, addr, length / PGSIZE, 1);
+  
+  // 更新VMA
+  if(addr == v->addr) {
+    // 从开始处取消映射
+    v->addr += length;
+    v->length -= length;
+  } else {
+    // 从结束处取消映射
+    v->length -= length;
+  }
+  
+  // 如果整个区域都被取消映射，释放VMA
+  if(v->length == 0) {
+    fileclose(v->file);
+    v->valid = 0;  // 将 used 改为 valid
+  }
+  
+  return 0;
+}

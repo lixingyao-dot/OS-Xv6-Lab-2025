@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+
+#include "types.h"
 struct spinlock tickslock;
 uint ticks;
 
@@ -67,6 +69,32 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  }else if(r_scause() == 13 || r_scause() == 15) {
+    // 页错误（13=读，15=写）
+    uint64 va = r_stval();
+    
+    if(va >= p->sz || va < p->trapframe->sp) {
+      p->killed = 1;
+    } else {
+      // 检查是否是mmap区域的页错误
+      struct vma *v = 0;
+      for(int i = 0; i < NVMA; i++) {
+        if(p->vma[i].valid && va >= p->vma[i].addr && 
+           va < p->vma[i].addr + p->vma[i].length) {
+          v = &p->vma[i];
+          break;
+        }
+      }
+      
+      if(v) {
+        // 处理mmap页错误
+        if(mmap_pagefault(va, v) < 0) {
+          p->killed = 1;
+        }
+      } else {
+        p->killed = 1;
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

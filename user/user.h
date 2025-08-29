@@ -1,6 +1,10 @@
 struct stat;
 struct rtcdate;
+#include "kernel/types.h"  // 包含基本类型定义
 
+// 手动定义 size_t 和 off_t
+typedef unsigned int size_t;
+typedef long off_t;
 // system calls
 int fork(void);
 int exit(int) __attribute__((noreturn));
@@ -40,3 +44,5 @@ void free(void*);
 int atoi(const char*);
 int memcmp(const void *, const void *, uint);
 void *memcpy(void *, const void *, uint);
+void *mmap(void *, size_t , int , int , int , off_t );
+int munmap(void *, size_t );

@@ -5,7 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -269,12 +272,19 @@ fork(void)
   struct proc *np;
   struct proc *p = myproc();
 
-  // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
   }
 
-  // Copy user memory from parent to child.
+  // 复制VMA (修正后的部分)
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vma[i].valid) {
+      np->vma[i] = p->vma[i];
+      if(np->vma[i].file)        // 改为file
+        filedup(np->vma[i].file); // 改为file
+    }
+  }
+
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
@@ -283,14 +293,9 @@ fork(void)
   np->sz = p->sz;
 
   np->parent = p;
-
-  // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
-
-  // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
-  // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
@@ -299,11 +304,8 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
-
   np->state = RUNNABLE;
-
   release(&np->lock);
-
   return pid;
 }
 
@@ -341,10 +343,34 @@ exit(int status)
 {
   struct proc *p = myproc();
 
+  // 处理VMA映射 (修正后的部分)
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vma[i].valid) {
+      if((p->vma[i].flags & MAP_SHARED) && 
+         (p->vma[i].prot & PROT_WRITE)) {
+        if(p->vma[i].file) {                   
+          ilock(p->vma[i].file->ip);           
+          filewrite(p->vma[i].file,            
+                   p->vma[i].addr, 
+                   p->vma[i].length);
+          iunlock(p->vma[i].file->ip);         
+        }
+      }
+      
+      uvmunmap(p->pagetable, p->vma[i].addr, 
+               PGROUNDUP(p->vma[i].length)/PGSIZE, 1);
+      
+      if(p->vma[i].file)                       
+        fileclose(p->vma[i].file);             
+      
+      p->vma[i].valid = 0;
+    }
+  }
+
   if(p == initproc)
     panic("init exiting");
 
-  // Close all open files.
+  // 关闭所有打开的文件
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
       struct file *f = p->ofile[fd];
@@ -358,43 +384,24 @@ exit(int status)
   end_op();
   p->cwd = 0;
 
-  // we might re-parent a child to init. we can't be precise about
-  // waking up init, since we can't acquire its lock once we've
-  // acquired any other proc lock. so wake up init whether that's
-  // necessary or not. init may miss this wakeup, but that seems
-  // harmless.
   acquire(&initproc->lock);
   wakeup1(initproc);
   release(&initproc->lock);
 
-  // grab a copy of p->parent, to ensure that we unlock the same
-  // parent we locked. in case our parent gives us away to init while
-  // we're waiting for the parent lock. we may then race with an
-  // exiting parent, but the result will be a harmless spurious wakeup
-  // to a dead or wrong process; proc structs are never re-allocated
-  // as anything else.
   acquire(&p->lock);
   struct proc *original_parent = p->parent;
   release(&p->lock);
   
-  // we need the parent's lock in order to wake it up from wait().
-  // the parent-then-child rule says we have to lock it first.
   acquire(&original_parent->lock);
-
   acquire(&p->lock);
 
-  // Give any children to init.
   reparent(p);
-
-  // Parent might be sleeping in wait().
   wakeup1(original_parent);
 
   p->xstate = status;
   p->state = ZOMBIE;
 
   release(&original_parent->lock);
-
-  // Jump into the scheduler, never to return.
   sched();
   panic("zombie exit");
 }
