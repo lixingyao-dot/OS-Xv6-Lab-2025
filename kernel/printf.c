@@ -17,6 +17,36 @@
 
 volatile int panicked = 0;
 
+
+// printf.c
+void
+backtrace(void)
+{
+  printf("backtrace:\n");
+
+  // 获取当前帧指针
+  uint64 fp = r_fp();
+
+  // 当到达栈页面顶部时停止回溯
+  uint64 stack_top = PGROUNDUP(fp);
+
+  // 遍历栈帧
+  while (fp < stack_top) {
+    // 返回地址存储在帧指针偏移-8的位置
+    uint64 ra = *(uint64*)(fp - 8);
+    printf("%p\n", ra);
+
+    // 保存的上一个帧指针存储在帧指针偏移-16的位置
+    uint64 prev_fp = *(uint64*)(fp - 16);
+
+    // 检查前一个帧指针是否有效（非零且递增）
+    if (prev_fp <= fp || prev_fp >= stack_top) {
+      break;
+    }
+    fp = prev_fp;
+  }
+}
+
 // lock to avoid interleaving concurrent printf's.
 static struct {
   struct spinlock lock;
@@ -120,6 +150,7 @@ panic(char *s)
   pr.locking = 0;
   printf("panic: ");
   printf(s);
+  backtrace();// 这里
   printf("\n");
   panicked = 1; // freeze uart output from other CPUs
   for(;;)

@@ -53,6 +53,46 @@ sys_sbrk(void)
 }
 
 uint64
+sys_sigalarm(void)
+{
+  int interval;           // 警报间隔时间（时钟滴答数）
+  uint64 handler;         // 处理函数的地址
+  
+  // 从用户空间获取参数：间隔时间和处理函数地址
+  if(argint(0, &interval) < 0 || argaddr(1, &handler) < 0)
+    return -1;  
+
+  // 获取当前进程的控制块
+  struct proc *p = myproc();
+  
+  // 设置进程的警报参数
+  p->alarm_interval = interval;       
+  p->alarm_handler = (void (*)())handler;  
+  p->alarm_ticks = interval;          
+
+  return 0;  
+}
+
+uint64
+sys_sigreturn(void)
+{
+  // 获取当前进程的控制块
+  struct proc *p = myproc();
+
+  // 确保确实在警报处理程序中调用
+  if(p->alarm_trapframe == 0 || p->alarm_going_off == 0) {
+    return -1; 
+  }
+
+  // 恢复原始陷阱帧
+  *p->trapframe = *p->alarm_trapframe;
+  // 清除重入标志
+  p->alarm_going_off = 0;
+  // 返回值将放入a0寄存器，返回用户程序
+  return p->trapframe->a0;
+}
+
+uint64
 sys_sleep(void)
 {
   int n;
@@ -60,6 +100,7 @@ sys_sleep(void)
 
   if(argint(0, &n) < 0)
     return -1;
+  backtrace();
   acquire(&tickslock);
   ticks0 = ticks;
   while(ticks - ticks0 < n){

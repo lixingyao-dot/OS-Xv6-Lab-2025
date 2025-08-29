@@ -103,4 +103,9 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int alarm_interval;          // 警报调用之间的时钟滴答数（0表示禁用）
+  void (*alarm_handler)();     // 指向用户模式处理函数的指针
+  int alarm_ticks;             // 距离下一次警报的剩余滴答数
+  int alarm_going_off;         // 防止重s入的标志
+  struct trapframe *alarm_trapframe;// 为警报处理保存的陷阱帧（在第6步中添加）
 };

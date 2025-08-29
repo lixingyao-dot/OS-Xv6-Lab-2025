@@ -1,0 +1,41 @@
+1. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+   - RISC-V 使用寄存器 a0-a7 传递函数参数
+   - 在 main 的 printf 调用中，a2 寄存器保存值 13
+
+2. Where is the call to function f in the assembly code for main? Where is the call to g?
+   - 函数 f 和 g 的调用被编译器内联优化了
+   - 在汇编代码中看不到直接的 call f 或 call g 指令
+   - 编译器直接将函数体嵌入到调用位置
+
+3. At what address is the function printf located?
+   - printf 函数位于地址 0x0000000000000628
+   - 这是通过查看 call.asm 中 printf 的调用位置确定的
+
+4. What value is in the register ra just after the jalr to printf in main?
+   - jalr 指令后，ra 寄存器包含返回地址
+   - 具体值为下一条指令的地址：0x000000000000005c
+
+5. Run the following code:
+   unsigned int i=0x00646c72;
+   printf("H%x Wo%s", 57616, &i);
+   What is the output?
+   - 输出: "He110 World"
+   - 解释: 
+     * 57616 的十六进制是 e110 → "He110"
+     * 0x00646c72 在小端序下解析为字节序列: 0x72, 0x6c, 0x64, 0x00
+     * ASCII: 0x72='r', 0x6c='l', 0x64='d', 0x00=字符串结束
+     * 所以 "%s" 输出 "rld" → "World"
+
+6. If the RISC-V were instead big-endian what would you set i to in order to yield the same output?
+   - 如果是大端序，需要设置 i = 0x726c6400
+   - 这样内存中字节顺序为: 0x72, 0x6c, 0x64, 0x00
+   - 与小端序的内存表示相同，因此输出结果相同
+
+7. In the following code, what is going to be printed after 'y='? Why does this happen?
+   printf("x=%d y=%d", 3);
+   - 输出: "x=3 y=[随机值]"
+   - 原因: 
+     * printf 期望两个整数参数，但只提供了一个(3)
+     * 第二个参数 y 会从调用约定中获取下一个寄存器的值
+     * 这个寄存器可能包含任意数据，因此 y 的值是不确定的
+     * 这演示了格式字符串攻击的基本原理

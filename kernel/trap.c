@@ -72,14 +72,42 @@ usertrap(void)
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
+  
 
   if(p->killed)
     exit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  // 如果是定时器中断，让出CPU
+  if(which_dev == 2) { // 定时器中断
+    if(p->alarm_interval > 0) { 
+      p->alarm_ticks--; // 减少警报计数器
+      
+      // 检查是否需要触发警报处理函数
+      if(p->alarm_ticks <= 0 && p->alarm_going_off == 0) {
+        p->alarm_ticks = p->alarm_interval; // 装填警报计数器
+        p->alarm_going_off = 1; // 设置标志位防止重入
 
+        // 保存当前陷阱帧
+        if(p->alarm_trapframe == 0) {
+          // 分配内存来保存陷阱帧
+          if((p->alarm_trapframe = (struct trapframe *)kalloc()) == 0) {
+            p->alarm_going_off = 0;
+            p->alarm_ticks = 0;
+            p->alarm_interval = 0;
+            p->alarm_handler = 0;
+            p->killed = 1;
+            exit(-1);
+          }
+        }
+        // 保存完整的陷阱帧内容（所有寄存器状态）
+        *p->alarm_trapframe = *p->trapframe;
+
+        // 修改陷阱帧的程序计数器(epc)，使其指向警报处理函数
+        p->trapframe->epc = (uint64)p->alarm_handler;
+      }
+    }
+    yield(); // 让出CPU，进行进程调度
+  }
   usertrapret();
 }
 
