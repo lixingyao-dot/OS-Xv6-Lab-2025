@@ -1,3 +1,4 @@
+
 // Physical memory allocator, for user processes,
 // kernel stacks, page-table pages,
 // and pipe buffers. Allocates whole 4096-byte pages.
@@ -18,17 +19,22 @@ struct run {
   struct run *next;
 };
 
+// 修改 kmem 结构体为每个CPU一个
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmems[NCPU];
 
+
+// 修改init部分：一个初始化改为NCPU个初始化
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  for(int i=0;i<NCPU;++i)
+    initlock(&kmems[i].lock, "kmem");
   freerange(end, (void*)PHYSTOP);
 }
+
 
 void
 freerange(void *pa_start, void *pa_end)
@@ -47,6 +53,11 @@ void
 kfree(void *pa)
 {
   struct run *r;
+  uint cid;
+  // 禁用中断并获取当前CPU ID，确保CPU ID获取的原子性
+  push_off();
+  cid=cpuid();
+  pop_off();
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
@@ -56,11 +67,12 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  acquire(&kmems[cid].lock);
+  r->next = kmems[cid].freelist;
+  kmems[cid].freelist = r;
+  release(&kmems[cid].lock);
 }
+
 
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
@@ -69,12 +81,31 @@ void *
 kalloc(void)
 {
   struct run *r;
+  uint cid;
+  push_off();
+  cid=cpuid();
+  pop_off();
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  acquire(&kmems[cid].lock);
+  r = kmems[cid].freelist;
+  if(r){
+    kmems[cid].freelist = r->next;
+    release(&kmems[cid].lock);
+  }else{
+    release(&kmems[cid].lock);
+    for(int i = 0; i < NCPU; i++){
+      if(i == cid) continue;
+      acquire(&kmems[i].lock);
+      r = kmems[i].freelist;
+      if(!r){
+        release(&kmems[i].lock);
+        continue;
+      }
+      kmems[i].freelist = r->next;
+      release(&kmems[i].lock);
+      break;
+    }
+  }
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
