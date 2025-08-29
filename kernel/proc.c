@@ -292,7 +292,7 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
-
+  np->trace_mask = p->trace_mask;
   np->state = RUNNABLE;
 
   release(&np->lock);
@@ -692,4 +692,16 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+int count_active_procs(void) {
+  struct proc *p;
+  int count = 0;
+  acquire(&pid_lock);  // 使用 pid_lock 作为进程表锁
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(p->state != UNUSED) {
+      count++;
+    }
+  }
+  release(&pid_lock);  // 释放锁
+  return count;
 }
