@@ -34,14 +34,14 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
-  kvminithart();
+  //kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -113,6 +113,19 @@ found:
     return 0;
   }
 
+  //creat a kernel page table and dispatch a kernel stack
+  if((p->kernel_pagetable = mod_kvminit()) == 0){
+  	freeproc(p);
+	  release(&p->lock);
+	  return 0;
+  }
+
+  char *pa = kalloc();
+  if(pa == 0) panic("allocpron:kalloc\n");
+  uint64 va = KSTACK((int) (p - proc));
+  mod_kvmmap(p->kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -141,6 +154,14 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
+  if(p->kstack)
+	  uvmunmap(p->kernel_pagetable, p->kstack, 1, 1);
+  p->kstack = 0;
+  if(p->kernel_pagetable)
+	  kvmfree(p->kernel_pagetable);
+  p->kernel_pagetable = 0;
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -220,6 +241,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  uvm2k(p->pagetable, p->kernel_pagetable, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -246,8 +268,14 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    if (uvm2k(p->pagetable, p->kernel_pagetable, sz-n, sz) < 0) {
+		  return -1;
+    }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    if (n >= PGSIZE) {  
+		  uvmunmap(p->kernel_pagetable, PGROUNDUP(sz), n/PGSIZE, 0);
+	  }
   }
   p->sz = sz;
   return 0;
@@ -288,6 +316,9 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+
+  if (uvm2k(np->pagetable, np->kernel_pagetable, 0, np->sz) < 0)
+	  return -1;
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -473,11 +504,19 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        w_satp(MAKE_SATP(p->kernel_pagetable)); 
+		    sfence_vma(); 
+
         swtch(&c->context, &p->context);
+
+        // use kernel_pagetable when no process is running.
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+
 
         found = 1;
       }
