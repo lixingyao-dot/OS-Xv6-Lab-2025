@@ -68,11 +68,43 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    uint64 cause = r_scause();
+    if(cause == 13 || cause == 15) { // 13=load page fault, 15=store page fault
+      uint64 va = r_stval();
+      va = PGROUNDDOWN(va); // 首先对齐地址
+      
+      // 更严格的地址检查
+      if(va >= p->sz || va >= MAXVA || 
+         va < PGROUNDUP(p->trapframe->sp)) {
+        printf("usertrap: invalid address %p\n", va);
+        p->killed = 1;
+        goto exit;
+      }
+      
+      // 分配物理页面
+      char *mem = kalloc();
+      if(mem == 0) {
+        printf("usertrap: kalloc failed\n");
+        p->killed = 1;
+        goto exit;
+      }
+      memset(mem, 0, PGSIZE);
+      
+      // 更安全的页表标志
+      int flags = PTE_R | PTE_W | PTE_U | PTE_V;
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, flags) != 0) {
+        printf("usertrap: mappages failed\n");
+        kfree(mem);
+        p->killed = 1;
+        goto exit;
+      }
+    } else {
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   }
-
+exit:
   if(p->killed)
     exit(-1);
 
@@ -82,6 +114,7 @@ usertrap(void)
 
   usertrapret();
 }
+
 
 //
 // return to user space

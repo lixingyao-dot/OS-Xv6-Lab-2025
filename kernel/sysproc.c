@@ -41,17 +41,27 @@ sys_wait(void)
 uint64
 sys_sbrk(void)
 {
-  int addr;
   int n;
+  if (argint(0, &n) < 0)
+    return -1;
+  
+  struct proc *p = myproc();
+  uint64 addr = p->sz;
+  uint64 newaddr = addr + n;
 
-  if(argint(0, &n) < 0)
+  // 更严格的边界检查
+  if (newaddr >= MAXVA || (n < 0 && newaddr > addr)) // 检查下溢
     return -1;
-  addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+
+  if (n < 0) {
+    // 负增长：立即释放内存
+    uvmdealloc(p->pagetable, addr, newaddr);
+  }
+  p->sz = newaddr;
   return addr;
 }
 
+ 
 uint64
 sys_sleep(void)
 {

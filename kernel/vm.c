@@ -5,7 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "spinlock.h"
+#include "proc.h"
 /*
  * the kernel's page table.
  */
@@ -91,6 +92,12 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
 // Look up a virtual address, return the physical address,
 // or 0 if not mapped.
 // Can only be used to look up user pages.
+// kernel/vm.c
+
+/**
+ * 查找虚拟地址对应的物理地址，如果不存在则按需分配
+ * 返回0表示失败，否则返回物理地址
+ */
 uint64
 walkaddr(pagetable_t pagetable, uint64 va)
 {
@@ -101,12 +108,34 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
+  
+  // 页表项不存在或无效时尝试按需分配
+  if(pte == 0 || (*pte & PTE_V) == 0) {
+    struct proc *p = myproc();
+    
+    // 检查地址是否在合法范围内
+    if(va >= p->sz || va < PGROUNDUP(p->trapframe->sp))
+      return 0;
+
+    // 分配物理页
+    char *mem = kalloc();
+    if(mem == 0)
+      return 0;
+    memset(mem, 0, PGSIZE);
+    
+    // 映射到页表（使用更安全的权限标志）
+    if(mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, 
+               PTE_W|PTE_R|PTE_U|PTE_V) != 0) {
+      kfree(mem);
+      return 0;
+    }
+    return (uint64)mem;
+  }
+  
+  // 检查用户权限
   if((*pte & PTE_U) == 0)
     return 0;
+    
   pa = PTE2PA(*pte);
   return pa;
 }
@@ -181,9 +210,9 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      continue; // 改为 continue 而不是 panic
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue; // 改为 continue 而不是 panic
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -315,9 +344,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue; // 改为 continue 而不是 panic
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue; // 改为 continue 而不是 panic
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
