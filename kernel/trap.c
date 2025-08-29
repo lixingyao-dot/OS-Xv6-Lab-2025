@@ -68,11 +68,46 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    uint64 cause = r_scause();
+    if(cause == 13 || cause == 15) {
+      // 页面错误
+      uint64 va = r_stval();
+      if(va >= p->sz) {
+        // 地址超出范围，杀死进程
+        p->killed = 1;
+      } else {
+        pte_t *pte = walk(p->pagetable, va, 0);
+        if(pte == 0) {
+          p->killed = 1;
+        } else if((*pte & PTE_V) == 0) {
+          p->killed = 1;
+        } else if((*pte & PTE_COW) == 0) {
+          p->killed = 1; // 不是COW页面，错误
+        } else {
+          // 处理COW页面错误
+          uint64 pa = PTE2PA(*pte);
+          uint64 flags = PTE_FLAGS(*pte);
+          char *mem = kalloc();
+          if(mem == 0) {
+            // 分配失败，杀死进程
+            p->killed = 1;
+          } else {
+            // 复制旧页面内容
+            memmove(mem, (char*)pa, PGSIZE);
+            // 更新PTE：清除COW标记，设置可写
+            flags = (flags & ~PTE_COW) | PTE_W;
+            *pte = PA2PTE((uint64)mem) | flags;
+            // 减少旧页面的引用计数
+            kfree((void*)pa);
+          }
+        }
+      }
+    } else {
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   }
-
   if(p->killed)
     exit(-1);
 

@@ -8,7 +8,55 @@
 #include "spinlock.h"
 #include "riscv.h"
 #include "defs.h"
+struct spinlock ref_lock;
+uint8 ref_count[PHYSTOP / PGSIZE];
 
+// 初始化引用计数数组和锁
+void
+ref_init()
+{
+  initlock(&ref_lock, "ref_count");
+  for (int i = 0; i < PHYSTOP / PGSIZE; i++) {
+    ref_count[i] = 0;
+  }
+}
+
+// 增加物理地址pa的引用计数
+void
+incref(uint64 pa)
+{
+  acquire(&ref_lock);
+  if(pa >= PHYSTOP) {
+    panic("incref: pa out of range");
+  }
+  int index = pa / PGSIZE;
+  if(ref_count[index] < 255) {
+    ref_count[index]++;
+  } else {
+    panic("incref: ref_count overflow");
+  }
+  release(&ref_lock);
+}
+
+// 减少物理地址pa的引用计数，返回是否计数为0
+int
+decref(uint64 pa)
+{
+  acquire(&ref_lock);
+  if(pa >= PHYSTOP) {
+    panic("decref: pa out of range");
+  }
+  int index = pa / PGSIZE;
+  if(ref_count[index] == 0) {
+    // 页面没有被引用，直接返回1表示可以释放
+    release(&ref_lock);
+    return 1;
+  }
+  ref_count[index]--;
+  int ret = ref_count[index] == 0;
+  release(&ref_lock);
+  return ret;
+}
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -26,6 +74,7 @@ struct {
 void
 kinit()
 {
+  ref_init(); // 初始化引用计数
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
 }
@@ -50,6 +99,11 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  // 减少引用计数，如果计数不为0，则返回
+  if(decref((uint64)pa) == 0) {
+    return;
+  }
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -76,7 +130,9 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r) {
     memset((char*)r, 5, PGSIZE); // fill with junk
+    incref((uint64)r); // 设置引用计数为1
+  }
   return (void*)r;
 }
